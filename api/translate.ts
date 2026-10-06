@@ -1,38 +1,6 @@
-import express from 'express';
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
 
-dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-
-app.use(express.json({ limit: '5mb' }));
-
-// Initialize Google Gen AI
-const apiKey = process.env.GEMINI_API_KEY || '';
-const ai = new GoogleGenAI({
-  apiKey: apiKey,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
-
 type LangCode = 'uz' | 'ru' | 'en';
-
-interface TranslateRequestBody {
-  text: string;
-  from: 'uz' | 'ru' | 'en' | 'auto';
-  to: 'uz' | 'ru' | 'en';
-  tone?: 'standard' | 'formal' | 'casual';
-}
 
 const UZBEK_WORDS = new Set([
   'salom', 'qalaysan', 'qalay', 'ishlar', 'ishlaring', 'bugun', 'kecha', 'ertaga',
@@ -54,11 +22,9 @@ const ENGLISH_WORDS = new Set([
   'has', 'not', 'can', 'will', 'do', 'does', 'did', 'very', 'well', 'morning', 'night'
 ]);
 
-// Helper to detect language
 function detectLanguage(str: string): LangCode {
   const trimmed = str.trim().toLowerCase();
 
-  // 1. Cyrillic check
   const cyrillicCount = (str.match(/[\u0400-\u04FF]/g) || []).length;
   const latinCount = (str.match(/[a-zA-Z]/g) || []).length;
 
@@ -66,7 +32,6 @@ function detectLanguage(str: string): LangCode {
     return 'ru';
   }
 
-  // 2. Check Uzbek specific markers
   const hasUzbekSpecialChars = /[og][‘'ʻ’`]|sh|ch/i.test(trimmed);
   const hasUzbekQ = /q[^u\s]|q$|[^a-z]q/i.test(trimmed);
 
@@ -100,7 +65,6 @@ function getLangName(code: LangCode): string {
   }
 }
 
-// Built-in offline dictionary fallback for common phrases and test cases
 const offlineDictionary: Record<string, Record<string, { translation: string; alternatives?: string[]; partOfSpeech?: string }>> = {
   'salom, qalaysan?': {
     'ru': { translation: 'Привет, как ты?', alternatives: ['Привет, как дела?'] },
@@ -184,13 +148,10 @@ const offlineDictionary: Record<string, Record<string, { translation: string; al
   },
 };
 
-// Clean any accidental prefix or markdown from translation
 function cleanTranslationText(text: string): string {
   if (!text) return '';
   let cleaned = text.trim();
-  // Remove prefixes like "Tarjima: ", "Translation: ", "Перевод: "
   cleaned = cleaned.replace(/^(?:tarjima|translation|перевод|natija):\s*/i, '');
-  // Remove wrapping quotes if redundant
   if (
     (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
     (cleaned.startsWith('«') && cleaned.endsWith('»'))
@@ -200,10 +161,22 @@ function cleanTranslationText(text: string): string {
   return cleaned;
 }
 
-// API: Translation endpoint
-app.post(['/api/translate', '/translate'], async (req, res) => {
+export default async function handler(req: any, res: any) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
   try {
-    const { text, from = 'auto', to = 'en', tone = 'standard' } = req.body as TranslateRequestBody;
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    const { text, from = 'auto', to = 'en', tone = 'standard' } = body;
 
     if (!text || typeof text !== 'string' || text.trim() === '') {
       return res.status(400).json({
@@ -214,14 +187,12 @@ app.post(['/api/translate', '/translate'], async (req, res) => {
     const trimmedText = text.trim();
     const isSingleWord = !trimmedText.includes(' ') && trimmedText.length < 35;
 
-    // Detect source language
     let detectedSource: LangCode = from === 'auto'
       ? detectLanguage(trimmedText)
       : from;
 
     let targetLanguage: LangCode = to;
 
-    // Handle auto or same-language target assignment
     if (from === 'auto') {
       if (detectedSource === 'uz') {
         targetLanguage = (to === 'uz' ? 'en' : to) || 'en';
@@ -236,8 +207,18 @@ app.post(['/api/translate', '/translate'], async (req, res) => {
       else targetLanguage = 'uz';
     }
 
-    // Call Gemini API if API key is present
+    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+
     if (apiKey) {
+      const ai = new GoogleGenAI({
+        apiKey: apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
+
       const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
       let lastError: any = null;
 
@@ -248,26 +229,11 @@ You are a master trilingual translator, lexicographer, and linguist specializing
 Translate the text from ${getLangName(detectedSource)} into ${getLangName(targetLanguage)}.
 
 Quality & Orthography Guidelines:
-1. MEANING & CONTEXT: Translate naturally and accurately preserving meaning, context, proper nouns, grammatical agreement, tenses, questions, and imperatives. Avoid awkward literal word-for-word translation.
-2. UZBEK SPECIFICS: When the target language is Uzbek, use standard modern Uzbek Latin script with proper letters: o‘, g‘, sh, ch, q, x, and correct case suffixes (-ga, -dan, -da, -ning, -ni, etc.).
+1. MEANING & CONTEXT: Translate naturally and accurately preserving meaning, context, proper nouns, grammatical agreement, tenses, questions, and imperatives.
+2. UZBEK SPECIFICS: When target is Uzbek, use standard modern Uzbek Latin script with proper letters: o‘, g‘, sh, ch, q, x, and correct case suffixes (-ga, -dan, -da, -ning, -ni, etc.).
 3. REGISTER & TONE: The requested tone is "${tone}".
-   - "standard": Balanced, natural everyday speech or written text.
-   - "formal": Respectful, polite, official/business style (e.g., using "Siz" forms in Uzbek, "Вы" forms in Russian, polite formal register in English).
-   - "casual": Friendly, colloquial, conversational.
-4. SINGLE WORDS & SHORT PHRASES:
-   If the input is a single word or short phrase, provide:
-   - translation: Primary best translation (just the word, no commentary)
-   - partOfSpeech: Word class (e.g., "ot / noun / существительное", "fe'l / verb / глагол")
-   - transliteration: Pronunciation guide if useful
-   - alternatives: 2 to 4 valid alternative translations
-   - synonyms: 2 to 3 synonyms in the target language
-   - examples: 1 or 2 high-quality bilingual usage sentences
-5. LONG TEXT:
-   Preserve paragraphs, line breaks, punctuation, capitalization, and numbers.
-6. STRICT OUTPUT:
-   The translation field must contain ONLY the translated text itself. Do NOT output prefixes like "Tarjima:", "Translation:", or "Перевод:".
-7. ACCURATE LANGUAGE DETECTION:
-   Confirm the detectedSourceLanguage as exactly "uz", "ru", or "en".
+4. SINGLE WORDS & SHORT PHRASES: Provide translation, partOfSpeech, transliteration, alternatives (2-4), synonyms (2-3), examples (1-2).
+5. STRICT OUTPUT: The translation field must contain ONLY the translated text itself.
 
 TEXT TO TRANSLATE:
 """
@@ -284,40 +250,14 @@ ${trimmedText}
               responseSchema: {
                 type: Type.OBJECT,
                 properties: {
-                  translation: {
-                    type: Type.STRING,
-                    description: 'The translated text into target language without any label prefix',
-                  },
-                  detectedSourceLanguage: {
-                    type: Type.STRING,
-                    description: 'The detected language code: uz, ru, or en',
-                  },
-                  targetLanguage: {
-                    type: Type.STRING,
-                    description: 'The target language code: uz, ru, or en',
-                  },
-                  partOfSpeech: {
-                    type: Type.STRING,
-                    description: 'Part of speech if single word or short phrase, otherwise empty',
-                  },
-                  transliteration: {
-                    type: Type.STRING,
-                    description: 'Pronunciation or phonetic transliteration',
-                  },
-                  alternatives: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                    description: 'Alternative translations or nuances',
-                  },
-                  synonyms: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                    description: 'Synonyms in the target language',
-                  },
-                  notes: {
-                    type: Type.STRING,
-                    description: 'Brief linguistic or cultural nuance note if applicable',
-                  },
+                  translation: { type: Type.STRING },
+                  detectedSourceLanguage: { type: Type.STRING },
+                  targetLanguage: { type: Type.STRING },
+                  partOfSpeech: { type: Type.STRING },
+                  transliteration: { type: Type.STRING },
+                  alternatives: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  synonyms: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  notes: { type: Type.STRING },
                   examples: {
                     type: Type.ARRAY,
                     items: {
@@ -327,7 +267,6 @@ ${trimmedText}
                         translated: { type: Type.STRING },
                       },
                     },
-                    description: 'Example usage sentences',
                   },
                 },
                 required: ['translation', 'detectedSourceLanguage', 'targetLanguage'],
@@ -337,10 +276,9 @@ ${trimmedText}
 
           const rawText = response.text || '';
           const parsed = JSON.parse(rawText);
-
           const cleanedTranslation = cleanTranslationText(parsed.translation || '');
 
-          return res.json({
+          return res.status(200).json({
             translation: cleanedTranslation,
             detectedSourceLanguage: (parsed.detectedSourceLanguage as LangCode) || detectedSource,
             targetLanguage: (parsed.targetLanguage as LangCode) || targetLanguage,
@@ -357,11 +295,11 @@ ${trimmedText}
         }
       }
 
-      // If all models failed, try offlineDictionary or vocabulary fallback
+      // Offline dictionary match
       const lower = trimmedText.toLowerCase();
       const dictEntry = offlineDictionary[lower]?.[targetLanguage];
       if (dictEntry) {
-        return res.json({
+        return res.status(200).json({
           translation: dictEntry.translation,
           detectedSourceLanguage: detectedSource,
           targetLanguage: targetLanguage,
@@ -382,7 +320,7 @@ ${trimmedText}
       });
       const reconstructed = translatedWords.join('');
       if (reconstructed && reconstructed !== trimmedText) {
-        return res.json({
+        return res.status(200).json({
           translation: reconstructed,
           detectedSourceLanguage: detectedSource,
           targetLanguage: targetLanguage,
@@ -397,7 +335,7 @@ ${trimmedText}
       const lower = trimmedText.toLowerCase();
       const match = offlineDictionary[lower]?.[targetLanguage];
       if (match) {
-        return res.json({
+        return res.status(200).json({
           translation: match.translation,
           detectedSourceLanguage: detectedSource,
           targetLanguage: targetLanguage,
@@ -406,72 +344,40 @@ ${trimmedText}
           synonyms: [],
         });
       }
-      return res.status(500).json({
-        error: 'Tarjima tizimi sozlanmoqda. Iltimos, qaytadan urinib ko‘ring.',
+
+      // Word-by-word heuristic fallback
+      const words = trimmedText.split(/(\s+|[.,!?;:()]+)/);
+      const translatedWords = words.map((chunk) => {
+        const cleanChunk = chunk.toLowerCase().trim();
+        if (!cleanChunk || /^[.,!?;:()]+$/.test(chunk)) return chunk;
+        const matched = offlineDictionary[cleanChunk]?.[targetLanguage]?.translation;
+        if (matched) return matched;
+        return chunk;
+      });
+      const reconstructed = translatedWords.join('');
+      if (reconstructed && reconstructed !== trimmedText) {
+        return res.status(200).json({
+          translation: reconstructed,
+          detectedSourceLanguage: detectedSource,
+          targetLanguage: targetLanguage,
+          alternatives: [],
+          synonyms: [],
+        });
+      }
+
+      return res.status(200).json({
+        translation: trimmedText,
+        detectedSourceLanguage: detectedSource,
+        targetLanguage: targetLanguage,
+        alternatives: [],
+        synonyms: [],
+        notes: 'Vercel Environment Variables sozlamalarida GEMINI_API_KEY o‘rnatilmagan.',
       });
     }
   } catch (error: any) {
     console.error('Translation error:', error);
     return res.status(500).json({
-      error: 'Tarjima vaqtida xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.',
+      error: error?.message || 'Tarjima vaqtida xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.',
     });
   }
-});
-
-// API: Language detector
-app.post(['/api/detect', '/detect'], (req, res) => {
-  const { text } = req.body;
-  if (!text || typeof text !== 'string') {
-    return res.json({ language: 'unknown' });
-  }
-  const detected = detectLanguage(text);
-  return res.json({
-    language: detected,
-    confidence: 0.95,
-  });
-});
-
-// API: Health check endpoint
-app.get(['/api/health', '/health'], (req, res) => {
-  res.json({
-    status: 'ok',
-    version: '1.0.0',
-    timestamp: Date.now(),
-  });
-});
-
-// Export app for Vercel Serverless Function and testing
-export default app;
-
-// Setup Vite middleware in dev or static files in production
-async function startServer() {
-  if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-    });
-  } else {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-      },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Lingua Translate server is running on http://0.0.0.0:${PORT}`);
-  });
 }
-
-// Only start standalone HTTP server when not running in Vercel serverless environment
-if (!process.env.VERCEL) {
-  startServer().catch((err) => {
-    console.error('Failed to start server:', err);
-    process.exit(1);
-  });
-}
-

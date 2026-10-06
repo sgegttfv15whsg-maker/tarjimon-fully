@@ -342,10 +342,21 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
+      const responseText = await response.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        if (!response.ok) {
+          throw new Error(
+            `Server xatoligi (${response.status}). Iltimos, bir ozdan so‘ng qaytadan urinib ko‘ring.`
+          );
+        }
+        throw new Error('Serverdan kutilmagan formatda javob qaytdi.');
+      }
 
       if (!response.ok) {
-        throw new Error(data.error || 'Tarjima vaqtida xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.');
+        throw new Error(data?.error || 'Tarjima vaqtida xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.');
       }
 
       const newResult: TranslationResult = {
