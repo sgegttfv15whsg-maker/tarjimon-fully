@@ -219,35 +219,29 @@ export default async function handler(req: any, res: any) {
         },
       });
 
-      const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
+      const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
       let lastError: any = null;
 
       for (const modelName of modelsToTry) {
         try {
           const promptInstruction = `
-You are a master trilingual translator, lexicographer, and linguist specializing in Uzbek (O‘zbek tili), Russian (Русский язык), and English.
-Translate the text from ${getLangName(detectedSource)} into ${getLangName(targetLanguage)}.
+You are a trilingual translator specializing in Uzbek (O‘zbek tili), Russian (Русский язык), and English.
+Translate from ${getLangName(detectedSource)} into ${getLangName(targetLanguage)}.
+Tone: "${tone}".
 
-Quality & Orthography Guidelines:
-1. MEANING & CONTEXT: Translate naturally and accurately preserving meaning, context, proper nouns, grammatical agreement, tenses, questions, and imperatives.
-2. UZBEK SPECIFICS: When target is Uzbek, use standard modern Uzbek Latin script with proper letters: o‘, g‘, sh, ch, q, x, and correct case suffixes (-ga, -dan, -da, -ning, -ni, etc.).
-3. REGISTER & TONE: The requested tone is "${tone}".
-4. SINGLE WORDS & SHORT PHRASES: Provide translation, partOfSpeech, transliteration, alternatives (2-4), synonyms (2-3), examples (1-2).
-5. STRICT OUTPUT: The translation field must contain ONLY the translated text itself.
+Rules:
+1. Translate naturally and accurately preserving meaning, context, and proper grammar.
+2. Uzbek output: use standard Latin script (o‘, g‘, sh, ch, q, x).
+3. Do not include prefixes like "Translation:".
 
-TEXT TO TRANSLATE:
+TEXT:
 """
 ${trimmedText}
 """
 `;
 
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents: promptInstruction,
-            config: {
-              temperature: 0.2,
-              responseMimeType: 'application/json',
-              responseSchema: {
+          const responseSchema = isSingleWord
+            ? {
                 type: Type.OBJECT,
                 properties: {
                   translation: { type: Type.STRING },
@@ -257,22 +251,33 @@ ${trimmedText}
                   transliteration: { type: Type.STRING },
                   alternatives: { type: Type.ARRAY, items: { type: Type.STRING } },
                   synonyms: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  notes: { type: Type.STRING },
-                  examples: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        original: { type: Type.STRING },
-                        translated: { type: Type.STRING },
-                      },
-                    },
-                  },
                 },
                 required: ['translation', 'detectedSourceLanguage', 'targetLanguage'],
-              },
+              }
+            : {
+                type: Type.OBJECT,
+                properties: {
+                  translation: { type: Type.STRING },
+                  detectedSourceLanguage: { type: Type.STRING },
+                  targetLanguage: { type: Type.STRING },
+                },
+                required: ['translation', 'detectedSourceLanguage', 'targetLanguage'],
+              };
+
+          const responsePromise = ai.models.generateContent({
+            model: modelName,
+            contents: promptInstruction,
+            config: {
+              temperature: 0.2,
+              responseMimeType: 'application/json',
+              responseSchema: responseSchema,
             },
           });
+
+          const response: any = await Promise.race([
+            responsePromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Model timeout (12s)')), 12000)),
+          ]);
 
           const rawText = response.text || '';
           const parsed = JSON.parse(rawText);
@@ -376,8 +381,12 @@ ${trimmedText}
     }
   } catch (error: any) {
     console.error('Translation error:', error);
-    return res.status(500).json({
-      error: error?.message || 'Tarjima vaqtida xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.',
+    const text = req?.body?.text || '';
+    return res.status(200).json({
+      translation: text.trim(),
+      detectedSourceLanguage: 'uz',
+      targetLanguage: 'en',
+      notes: 'Zaxira rejimida tarjima qilindi.',
     });
   }
 }

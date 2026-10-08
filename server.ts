@@ -238,7 +238,7 @@ app.post(['/api/translate', '/translate'], async (req, res) => {
 
     // Call Gemini API if API key is present
     if (apiKey) {
-      const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
+      const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
       let lastError: any = null;
 
       for (const modelName of modelsToTry) {
@@ -275,7 +275,7 @@ ${trimmedText}
 """
 `;
 
-          const response = await ai.models.generateContent({
+          const responsePromise = ai.models.generateContent({
             model: modelName,
             contents: promptInstruction,
             config: {
@@ -334,6 +334,11 @@ ${trimmedText}
               },
             },
           });
+
+          const response: any = await Promise.race([
+            responsePromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Model timeout (12s)')), 12000)),
+          ]);
 
           const rawText = response.text || '';
           const parsed = JSON.parse(rawText);

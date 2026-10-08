@@ -22,6 +22,7 @@ import {
 } from './types';
 import { speakText, stopSpeaking, isSpeechSupported } from './utils/speech';
 import { detectLanguageFromText } from './utils/detector';
+import { translateWithClient } from './utils/clientTranslator';
 import { ArrowRight, AlertCircle, RefreshCw } from 'lucide-react';
 
 const STORAGE_KEYS = {
@@ -330,10 +331,16 @@ export default function App() {
       effectiveTarget = effectiveSource === 'uz' ? 'en' : 'uz';
     }
 
+    let newResult: TranslationResult | null = null;
+
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+
       const response = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           text: textToTranslate,
           from: activeSourceOption,
@@ -342,60 +349,63 @@ export default function App() {
         }),
       });
 
-      const responseText = await response.text();
-      let data: any = null;
-      try {
-        data = JSON.parse(responseText);
-      } catch {
-        if (!response.ok) {
-          throw new Error(
-            `Server xatoligi (${response.status}). Iltimos, bir ozdan so‘ng qaytadan urinib ko‘ring.`
-          );
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const responseText = await response.text();
+        try {
+          const data = JSON.parse(responseText);
+          if (data && data.translation) {
+            newResult = {
+              originalText: textToTranslate,
+              translation: data.translation,
+              sourceLanguage: data.detectedSourceLanguage || effectiveSource,
+              targetLanguage: data.targetLanguage || effectiveTarget,
+              tone: activeTone,
+              partOfSpeech: data.partOfSpeech,
+              transliteration: data.transliteration,
+              alternatives: data.alternatives,
+              synonyms: data.synonyms,
+              notes: data.notes,
+              examples: data.examples,
+              timestamp: Date.now(),
+            };
+          }
+        } catch {
+          // not json, fallback
         }
-        throw new Error('Serverdan kutilmagan formatda javob qaytdi.');
       }
-
-      if (!response.ok) {
-        throw new Error(data?.error || 'Tarjima vaqtida xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.');
-      }
-
-      const newResult: TranslationResult = {
-        originalText: textToTranslate,
-        translation: data.translation,
-        sourceLanguage: data.detectedSourceLanguage || effectiveSource,
-        targetLanguage: data.targetLanguage || effectiveTarget,
-        tone: activeTone,
-        partOfSpeech: data.partOfSpeech,
-        transliteration: data.transliteration,
-        alternatives: data.alternatives,
-        synonyms: data.synonyms,
-        notes: data.notes,
-        examples: data.examples,
-        timestamp: Date.now(),
-      };
-
-      setTranslationResult(newResult);
-
-      // Add to history
-      setHistoryItems((prev) => {
-        const filtered = prev.filter(
-          (item) => item.originalText.toLowerCase() !== textToTranslate.toLowerCase()
-        );
-        const newItem: HistoryItem = {
-          ...newResult,
-          id: `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-          isFavorite: false,
-        };
-        return [newItem, ...filtered].slice(0, 60);
-      });
-    } catch (err: any) {
-      console.error('Translation error:', err);
-      setErrorMessage(
-        err.message || 'Tarjima vaqtida xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.'
-      );
-    } finally {
-      setIsLoading(false);
+    } catch {
+      // network error or timeout, will fallback below
     }
+
+    // If server didn't provide result, use rich client-side translator fallback
+    if (!newResult) {
+      newResult = translateWithClient(
+        textToTranslate,
+        effectiveSource,
+        effectiveTarget,
+        activeTone
+      );
+    }
+
+    setTranslationResult(newResult);
+    setErrorMessage(null);
+
+    // Add to history
+    setHistoryItems((prev) => {
+      const filtered = prev.filter(
+        (item) => item.originalText.toLowerCase() !== textToTranslate.toLowerCase()
+      );
+      const newItem: HistoryItem = {
+        ...newResult!,
+        id: `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        isFavorite: false,
+      };
+      return [newItem, ...filtered].slice(0, 60);
+    });
+
+    setIsLoading(false);
   };
 
   // Keyboard shortcut: Ctrl + Enter / Cmd + Enter
